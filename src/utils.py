@@ -1,6 +1,2 @@
-from re import X
-
-
-
 
     
