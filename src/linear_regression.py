@@ -1,5 +1,8 @@
+from ast import Pass
 import numpy as np
 from math import sqrt
+from scipy.stats import t
+import pandas as pd
 
 class simple_linear_regression():
     """
@@ -56,14 +59,44 @@ class simple_linear_regression():
         the standard error for each observation. 
         This is used as the true standard error cannot be known. 
 
-        Assumes that for each observation the errors are uncorrelated to the common variance. 
+        Assumes that for each observation the errors are uncorrelated to the common variance.
+
+        Interpretation:
+        How much on average will the response deviate from the true regression line. 
+        Measures the lack of fit of a model.
         '''
         
         # n-2 is due to the degrees of freedom being loss when trying to predict b1 and b0.
         return sqrt(
             self._get_rss()/(self.n-2)
         )
-    
+        
+    def _get_r_squared(self):
+        '''
+        Returns the r squared of a linear regression using the residual sum of squares (RSS)
+        and total sum of squares (TSS).
+
+        The RSS looks at the total variability that remains after the regression.
+        The TSS looks at the total variability that is in the response before regression. 
+
+        R2 looks at the proportion of variability of the response Y that can be explained
+        with the predictors X. 
+
+        R2 = TSS - RSS / TSS = 1 - RSS/TSS 
+
+        A high R2 means that the predictor X can explain a large portion of the variability
+        of Y. In contrast a low R2 means that X can not explain a large portion of the 
+        variability of Y due to either there being inherently a large variablity in Y, the
+        model being wrong or both.
+        '''
+        rss = self._get_rss()
+
+        tss = ((self.y - self.y_avg)**2).sum()
+
+        print(rss, tss)
+
+        return 1 - (rss/tss)
+
 
     def _get_std_error(self):
         '''
@@ -103,7 +136,7 @@ class simple_linear_regression():
         }
 
 
-    def check_significance(self):
+    def get_significance(self):
         '''
         Uses t-statistic to see how many standard deviations a parameter is from 0. 
         We can use the standard error to run a hypothesis test. 
@@ -122,9 +155,138 @@ class simple_linear_regression():
         # t-statistic for parameter B1
         t1 = (self.parameters[1] - 0) / self.std_errors[1]
         # t-statistic for parameter B0
-        t2 = (self.parameters[0] - 0) / self.std_errors[0]
+        t0 = (self.parameters[0] - 0) / self.std_errors[0]
         
         # Lose two degress of freedom by having two parameters.
         degrees_of_freedom = self.n - 2
 
-        print(t1, t2)
+        # t.sf is the survival function or 1 - the cumulative distribution function.
+        # Looks at the integral from -infinity to |t| in this case and the area under the
+        # probability density function of the t-distribution gives you the cdf.
+        p1 = t.sf(abs(t1),df=degrees_of_freedom)
+        p2 = t.sf(abs(t0),df=degrees_of_freedom)
+
+        return pd.DataFrame(
+            {
+                'Parameter': ['B0', 'B1'],
+                'Coefficient': [self.parameters[0],self.parameters[1]],
+                'std_error':[self.std_errors[0], self.std_errors[1]],
+                't-statistic':[t0, t1],
+                'p-value':[p1, p2]
+            }
+        )
+
+
+class multi_linear_regression():
+    
+    def __init__(self, x, y):
+        self.n = len(y)
+        self.p = x.shape[1]
+        self.x = self._add_intercept(np.array(x))
+        self.y = np.array(y)
+        self.x_avg = self._avg_x()
+        self.y_avg = self.y.mean()
+        self.parameters = self._minimize_rss()
+    
+
+    def _avg_x(self):
+        '''
+        Takes a matrix of predictors and gets the average for each predictor. 
+        '''
+        # axis = 0 gets the means across the columns. 
+        return np.mean(a = self.x, axis=0)
+
+
+    def _add_intercept(self, x):
+        '''
+        Need to add an intercept term to the data matrix to be able to calculate the 
+        intercept for the linear model. 
+        '''
+        x_and_intercept = np.empty(shape=(self.n, self.p+1))
+        x_and_intercept[:,0] = 1
+        x_and_intercept[:,1:] = x
+
+        return x_and_intercept
+
+
+    def _get_rss(self):
+        '''
+        Returns the residual sum of squares for a multi linear regression. 
+        '''
+        predictions = self.predict(self.x)
+        # Need to reshape predictions and so it can subtract element wise from y.
+        residuals = (self.y - predictions.reshape(self.n))
+       
+        # @ = matrix multiplication. 
+        # This is equivalent of sum of residuals**2
+        # Should be faster than a for loop. 
+        return residuals.T @ residuals
+    
+
+    def _get_rse(self): 
+        '''
+        Returns the residual standard errors for each of the parameters. 
+        '''
+        rss = self._get_rss()
+        return sqrt(
+            rss/(self.n - self.p)
+        )
+
+
+    def _get_std_errors(self):
+        '''
+        Get the std errors for all the parameters for a multiple linear regression. 
+        The std error is represented by the variance of the error term in the linear model
+        multiplied by invs(X'X).
+
+        Can use QR decomposition to give an easier matrix to invert, by representing X'X
+        with R'R
+        '''
+        
+        # The variance of the random error can't be known so estimated with rse.
+        variance_of_error_term = self._get_rse()**2
+        print(variance_of_error_term)
+        _, r = np.linalg.qr(self.x)
+
+        print(r.shape)
+        print(r)
+
+        variance_of_coefficients = np.linalg.inv(r.T@r)*variance_of_error_term
+
+        return variance_of_coefficients
+
+
+    def _minimize_rss(self):
+        '''
+        Will use QR decomposition to minimize rss with multiple predictors. 
+        This is a computationally more efficient and more stable than calculating 
+        b = inverse(X'X)     *    (X'Y), where b is a column vector of the coefficients.
+                    |               |
+              covariance and    Covariance of X
+                Variance           and y.
+                 of X.
+        
+        What is QR decomposition?
+        Factoring a matrix A into two matrices Q and R.
+        Specifically:
+        A = Q . R , where A is an invertible matrix we want to decompose.
+                          Q is an m x m orthogonal matrix (ie. Q_trans = invs(Q)) and 
+                          R is an m x n upper triangle matrix.
+        
+        b = invs(R) . Q_trans . Y
+        invs(R) is easier to find than X_trans X.  
+        numpy.qr() returns Q,R for a given matrix.
+
+        B is a vector that represents the coefficients for the linear model. 
+
+        '''
+        q, r = np.linalg.qr(self.x)
+        b = np.linalg.inv(r).dot(q.T).dot(self.y)
+        return b.reshape(self.p+1,1)
+
+    
+    def predict(self, x):
+        '''
+        Given a predictor vector of x predict the response y with the coefficient vector b-hat. 
+        '''
+        return x @ self.parameters
